@@ -1,0 +1,12 @@
+{
+  "subjects": 200,
+  "seed": 42,
+  "seeded_anomalies": 50,
+  "counts_by_rule": {
+    "AE001": 10,
+    "AE002": 10,
+    "DM001": 10,
+    "EX001": 10,
+    "LB001": 10
+  }
+}
