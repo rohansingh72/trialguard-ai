@@ -2,12 +2,19 @@ from io import BytesIO
 from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from app.models.schemas import SubjectReview, TrialSummary, TrialValidation
+from app.models.schemas import (
+    AgentInvestigationRequest,
+    AgentInvestigationResponse,
+    SubjectReview,
+    TrialSummary,
+    TrialValidation,
+)
+from app.agents.investigation import run_investigation
 from app.services.data_store import TrialDataStore
 from app.services.review import review_subject, summarize_trial
 from app.services.validation import validate_trial
 
-app = FastAPI(title="TrialGuard AI", version="0.2.0", description="Clinical-trial data quality review API with upload, schema validation, and deterministic QC.")
+app = FastAPI(title="TrialGuard AI", version="0.3.0", description="Clinical-trial data quality review API with upload, schema validation, and deterministic QC.")
 store = TrialDataStore(); DEFAULT_DATA_FOLDER = Path("generated_data")
 
 def _read_csv_upload(upload: UploadFile) -> pd.DataFrame:
@@ -56,3 +63,28 @@ def get_subject_review(subject_id: str):
 def get_trial_summary():
     if not store.loaded(): raise HTTPException(status_code=400, detail="No trial data loaded.")
     return summarize_trial(store)
+
+
+@app.post("/agent/investigate", response_model=AgentInvestigationResponse)
+def investigate_subject(request: AgentInvestigationRequest):
+    if not store.loaded():
+        raise HTTPException(status_code=400, detail="No trial data loaded.")
+
+    if request.subject_id not in set(store.all_subject_ids()):
+        raise HTTPException(status_code=404, detail="Subject not found.")
+
+    try:
+        return run_investigation(
+            store=store,
+            subject_id=request.subject_id,
+            question=request.question,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Agent investigation failed. Confirm that Ollama is running and "
+                "that TRIALGUARD_OLLAMA_MODEL is installed. "
+                f"Underlying error: {exc}"
+            ),
+        ) from exc
