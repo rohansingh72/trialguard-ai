@@ -196,3 +196,66 @@ review_labs
 review_exposure
 review_demographics
 ```
+
+---
+
+# Milestone 3 — Human Review and Audit Trail
+
+Milestone 3 adds a human-in-the-loop review workflow on top of deterministic QC and the guarded LangGraph investigation agent.
+
+## Design principle
+
+Clinical source data remain read-only. A reviewer changes only the status of a QC finding; DM, AE, LB, and EX are never silently edited by this workflow.
+
+## Review statuses
+
+- `pending`
+- `approved`
+- `rejected`
+- `needs_followup`
+
+## New endpoints
+
+- `POST /human-review/sync` — snapshot current deterministic QC findings into the review queue.
+- `GET /human-review/findings` — list review records; optionally filter with `?status=pending`.
+- `GET /human-review/findings/{finding_id}` — retrieve one review record.
+- `PATCH /human-review/findings/{finding_id}` — update status, reviewer, and note.
+- `GET /human-review/findings/{finding_id}/audit` — retrieve the append-only audit events for the finding.
+
+## Demo flow
+
+```bash
+python synthetic_data/generate.py
+uvicorn app.main:app --reload
+```
+
+In Swagger:
+
+1. `POST /load-demo-data`
+2. `POST /human-review/sync`
+3. `GET /human-review/findings`
+4. Copy a `finding_id`
+5. `PATCH /human-review/findings/{finding_id}` with:
+
+```json
+{
+  "status": "needs_followup",
+  "reviewer": "Rohan",
+  "note": "Verify against source before closing."
+}
+```
+
+6. `GET /human-review/findings/{finding_id}/audit`
+
+The audit endpoint should show the original `created` event plus the subsequent `review_updated` event.
+
+## Local smoke test
+
+```bash
+python synthetic_data/generate.py
+python scripts_human_review_smoke.py
+```
+
+## Important limitation
+
+Review state is still in memory in Milestone 3. Restarting the API clears it. Milestone 4 will move trial metadata, review records, and audit events into a persistent database and add study-level separation.

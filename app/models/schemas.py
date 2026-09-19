@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel
 
@@ -47,3 +48,38 @@ class AgentInvestigationResponse(BaseModel):
     question: str
     answer: str
     tools_used: list[str]
+
+ReviewStatus = Literal["pending", "approved", "rejected", "needs_followup"]
+
+
+class ReviewDecisionRequest(BaseModel):
+    status: ReviewStatus
+    reviewer: str
+    note: str | None = None
+
+
+class ReviewRecord(BaseModel):
+    finding_id: str
+    finding: Finding
+    status: ReviewStatus
+    reviewer: str | None = None
+    note: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AuditEvent(BaseModel):
+    event_id: str
+    finding_id: str
+    event_type: Literal["created", "review_updated"]
+    previous_status: ReviewStatus | None
+    new_status: ReviewStatus
+    reviewer: str
+    note: str | None = None
+    timestamp: datetime
+
+
+class ReviewSyncResponse(BaseModel):
+    created: int
+    total: int
+
