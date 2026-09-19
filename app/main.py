@@ -8,14 +8,22 @@ from app.models.schemas import (
     SubjectReview,
     TrialSummary,
     TrialValidation,
+    AuditEvent,
+    ReviewDecisionRequest,
+    ReviewRecord,
+    ReviewStatus,
+    ReviewSyncResponse,
 )
 from app.agents.investigation import run_investigation
 from app.services.data_store import TrialDataStore
 from app.services.review import review_subject, summarize_trial
+from app.services.human_review import HumanReviewStore
 from app.services.validation import validate_trial
 
-app = FastAPI(title="TrialGuard AI", version="0.3.0", description="Clinical-trial data quality review API with upload, schema validation, and deterministic QC.")
-store = TrialDataStore(); DEFAULT_DATA_FOLDER = Path("generated_data")
+app = FastAPI(title="TrialGuard AI", version="0.4.0", description="Clinical-trial QC, guarded AI investigation, and human-review audit workflow.")
+store = TrialDataStore()
+human_review_store = HumanReviewStore()
+DEFAULT_DATA_FOLDER = Path("generated_data")
 
 def _read_csv_upload(upload: UploadFile) -> pd.DataFrame:
     try:
@@ -24,13 +32,14 @@ def _read_csv_upload(upload: UploadFile) -> pd.DataFrame:
         raise HTTPException(status_code=400, detail=f"Could not parse {upload.filename} as CSV: {exc}") from exc
 
 @app.get("/health")
-def health(): return {"status":"ok","version":"0.2.0"}
+def health(): return {"status":"ok","version":"0.4.0"}
 
 @app.post("/load-demo-data", response_model=TrialValidation)
 def load_demo_data():
     if not DEFAULT_DATA_FOLDER.exists():
         raise HTTPException(status_code=400, detail="generated_data folder not found. Run: python synthetic_data/generate.py")
     store.load_from_folder(DEFAULT_DATA_FOLDER)
+    human_review_store.reset()
     validation=validate_trial(store.frames())
     if not validation.valid: raise HTTPException(status_code=422, detail=validation.model_dump())
     return validation
@@ -41,6 +50,7 @@ def upload_trial(dm: UploadFile=File(...), ae: UploadFile=File(...), lb: UploadF
     validation=validate_trial(frames)
     if not validation.valid: raise HTTPException(status_code=422, detail=validation.model_dump())
     store.load_frames(frames["DM"],frames["AE"],frames["LB"],frames["EX"])
+    human_review_store.reset()
     return validation
 
 @app.get("/trial/validation", response_model=TrialValidation)
@@ -88,3 +98,48 @@ def investigate_subject(request: AgentInvestigationRequest):
                 f"Underlying error: {exc}"
             ),
         ) from exc
+
+@app.post("/human-review/sync", response_model=ReviewSyncResponse)
+def sync_human_review_findings():
+    if not store.loaded():
+        raise HTTPException(status_code=400, detail="No trial data loaded.")
+    created, total = human_review_store.sync_from_trial(store)
+    return ReviewSyncResponse(created=created, total=total)
+
+
+@app.get("/human-review/findings", response_model=list[ReviewRecord])
+def list_human_review_findings(status: ReviewStatus | None = None):
+    return human_review_store.list_records(status=status)
+
+
+@app.get("/human-review/findings/{finding_id}", response_model=ReviewRecord)
+def get_human_review_finding(finding_id: str):
+    record = human_review_store.get(finding_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Review finding not found.")
+    return record
+
+
+@app.patch("/human-review/findings/{finding_id}", response_model=ReviewRecord)
+def update_human_review_finding(finding_id: str, request: ReviewDecisionRequest):
+    reviewer = request.reviewer.strip()
+    if not reviewer:
+        raise HTTPException(status_code=422, detail="Reviewer is required.")
+    record = human_review_store.update(
+        finding_id,
+        status=request.status,
+        reviewer=reviewer,
+        note=request.note,
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Review finding not found.")
+    return record
+
+
+@app.get("/human-review/findings/{finding_id}/audit", response_model=list[AuditEvent])
+def get_human_review_audit(finding_id: str):
+    events = human_review_store.audit_events(finding_id)
+    if events is None:
+        raise HTTPException(status_code=404, detail="Review finding not found.")
+    return events
+
