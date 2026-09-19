@@ -259,3 +259,92 @@ python scripts_human_review_smoke.py
 ## Important limitation
 
 Review state is still in memory in Milestone 3. Restarting the API clears it. Milestone 4 will move trial metadata, review records, and audit events into a persistent database and add study-level separation.
+
+---
+
+# Milestone 4 — Persistent multi-study storage
+
+Milestone 4 removes the single global in-memory study limitation.
+
+## What changed
+
+- SQLite-backed study registry.
+- Study-scoped persisted source datasets under `.trialguard/studies/<study_id>/`.
+- Review decisions persist across API restarts.
+- Audit events persist across API restarts.
+- Every QC/review route is explicitly scoped to a `study_id`.
+- Identical findings in different studies receive different finding IDs.
+- `.trialguard/` is ignored by Git.
+
+Clinical source CSVs remain immutable snapshots. SQLite stores study metadata and workflow state; reviewer decisions never silently modify DM/AE/LB/EX.
+
+## New API flow
+
+```text
+POST /studies/demo
+        ↓
+returns STUDY-XXXXXXXX
+        ↓
+GET /studies/{study_id}/subjects
+GET /studies/{study_id}/summary
+POST /studies/{study_id}/human-review/sync
+PATCH /studies/{study_id}/human-review/findings/{finding_id}
+        ↓
+restart FastAPI
+        ↓
+review state is still present
+```
+
+You can also create a study from four uploaded CSVs with `POST /studies/upload`.
+
+## Local run
+
+```bash
+python synthetic_data/generate.py
+python -m pytest
+python scripts_persistence_smoke.py
+uvicorn app.main:app --reload
+```
+
+The default persistent data directory is `.trialguard/`. To put it elsewhere:
+
+```bash
+export TRIALGUARD_DATA_DIR=/path/to/trialguard-data
+```
+
+## Swagger smoke test
+
+1. `POST /studies/demo`
+2. Copy the returned `study_id`.
+3. `GET /studies`
+4. `GET /studies/{study_id}/subjects`
+5. `POST /studies/{study_id}/human-review/sync`
+6. `GET /studies/{study_id}/human-review/findings`
+7. Update one finding.
+8. Stop and restart Uvicorn.
+9. Repeat `GET /studies` and the finding endpoint. The study and review decision should still exist.
+
+## Architecture
+
+```text
+                    ┌───────────────────────┐
+CSV upload/demo ───►│ Study Repository      │
+                    │ SQLite study metadata │
+                    └──────────┬────────────┘
+                               │
+                               ▼
+                 .trialguard/studies/STUDY-*/
+                      DM / AE / LB / EX
+                               │
+                               ▼
+                    Deterministic QC engine
+                               │
+                  ┌────────────┴────────────┐
+                  ▼                         ▼
+             Guarded agent          Persistent review
+                                    + audit in SQLite
+```
+
+## Next milestone
+
+Milestone 5 adds a reviewer-facing web dashboard over these study-scoped APIs.

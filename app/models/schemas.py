@@ -83,3 +83,15 @@ class ReviewSyncResponse(BaseModel):
     created: int
     total: int
 
+
+
+class StudyInfo(BaseModel):
+    study_id: str
+    name: str
+    subject_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class StudyListResponse(BaseModel):
+    studies: list[StudyInfo]
