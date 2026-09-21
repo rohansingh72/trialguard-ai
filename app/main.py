@@ -26,10 +26,10 @@ from app.services.validation import validate_trial
 
 app = FastAPI(
     title="TrialGuard AI",
-    version="0.5.0",
+    version="0.6.0",
     description=(
-        "Multi-study clinical-trial QC with persistent review/audit state "
-        "and guarded AI investigation."
+        "Multi-study clinical-trial QC with persistent review/audit state, "
+        "guarded AI investigation, and reviewer dashboard support."
     ),
 )
 
@@ -57,7 +57,7 @@ def _study_store_or_404(study_id: str):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.5.0", "storage": "sqlite"}
+    return {"status": "ok", "version": "0.6.0", "storage": "sqlite"}
 
 
 @app.get("/studies", response_model=StudyListResponse)

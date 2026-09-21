@@ -348,3 +348,99 @@ CSV upload/demo ───►│ Study Repository      │
 ## Next milestone
 
 Milestone 5 adds a reviewer-facing web dashboard over these study-scoped APIs.
+
+---
+
+# Milestone 5 — Reviewer Dashboard
+
+Milestone 5 adds a Streamlit reviewer workspace on top of the persistent FastAPI backend.
+
+## Dashboard capabilities
+
+- Select among persisted studies.
+- View study-level QC metrics.
+- Synchronize deterministic QC findings into the human-review queue.
+- Filter findings by status, severity, domain, and subject.
+- Inspect deterministic evidence for an individual finding.
+- Approve, reject, or mark findings as needing follow-up.
+- Add reviewer notes.
+- View the append-only audit history.
+- Run the guarded AI investigation workflow from the same UI.
+- View study-level finding distributions by severity, domain, and rule.
+
+The dashboard does **not** mutate clinical source data. Review actions update only the persisted review state and audit trail.
+
+## Run the dashboard
+
+Start the API in terminal 1:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+Start the dashboard in terminal 2:
+
+```bash
+streamlit run dashboard/app.py
+```
+
+or:
+
+```bash
+./run_dashboard.sh
+```
+
+Then open the Streamlit URL shown in the terminal, normally:
+
+```text
+http://localhost:8501
+```
+
+The default API address is:
+
+```text
+http://127.0.0.1:8000
+```
+
+You can override it with:
+
+```bash
+export TRIALGUARD_API_URL=http://127.0.0.1:8000
+```
+
+## Suggested demo flow
+
+1. Generate the demo data if needed:
+   `python synthetic_data/generate.py`
+2. Start FastAPI.
+3. Start Streamlit.
+4. Create or select a demo study.
+5. Click **Sync deterministic findings**.
+6. Open an `AE001`, `LB001`, or `EX001` finding.
+7. Set a reviewer, choose a review decision, add a note, and save.
+8. Confirm the audit history records the review transition.
+9. Open **AI Investigation** and investigate a subject.
+
+## Architecture
+
+```text
+                    Reviewer
+                       |
+                       v
+                Streamlit dashboard
+                       |
+                       v
+                    FastAPI
+             _________|___________
+            |         |           |
+            v         v           v
+       QC engine   AI agent   Review service
+            |         |           |
+            |         |           v
+            |         |      SQLite audit log
+            |         |
+            v         v
+       Study-scoped persisted clinical data
+```
+
+Milestone 6 will focus on production hardening: Docker Compose, CI, health/observability, structured logging, and deployability.
