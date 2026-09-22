@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from pathlib import Path
-import sys
-
-# Ensure the project root is importable when Streamlit runs this file directly.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))

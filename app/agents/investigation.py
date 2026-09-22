@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -10,6 +9,7 @@ from langgraph.graph import MessagesState, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.agents.tools import build_investigation_tools
+from app.config import Settings
 from app.services.data_store import TrialDataStore
 
 
@@ -89,9 +89,10 @@ def _run_broad_qc(store: TrialDataStore, subject_id: str) -> tuple[dict[str, Any
 
 
 def _build_model() -> ChatOllama:
+    settings = Settings.from_env()
     return ChatOllama(
-        model=os.getenv("TRIALGUARD_OLLAMA_MODEL", "llama3.2:3b"),
-        base_url=os.getenv("TRIALGUARD_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+        model=settings.ollama_model,
+        base_url=settings.ollama_base_url,
         temperature=0,
     )
 

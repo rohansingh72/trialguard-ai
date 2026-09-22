@@ -444,3 +444,65 @@ export TRIALGUARD_API_URL=http://127.0.0.1:8000
 ```
 
 Milestone 6 will focus on production hardening: Docker Compose, CI, health/observability, structured logging, and deployability.
+
+---
+
+# Milestone 6 — Production Readiness
+
+Milestone 6 completes the core TrialGuard portfolio build.
+
+## Production-oriented additions
+
+- Docker image for API and dashboard
+- Docker Compose orchestration
+- persistent named volume for SQLite + study snapshots
+- centralized environment-based configuration
+- JSON structured request logging
+- request IDs via `X-Request-ID`
+- `/health` liveness endpoint
+- `/ready` storage/database readiness endpoint
+- GitHub Actions CI for compile, tests, and Docker build
+- documented single-instance SQLite deployment constraint
+- deployment notes in `DEPLOYMENT.md`
+
+## Local container run
+
+Make sure Ollama is running on the host, then:
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Open:
+
+- Dashboard: http://localhost:8501
+- API docs: http://localhost:8000/docs
+- Readiness: http://localhost:8000/ready
+
+## Portfolio architecture
+
+```text
+Streamlit reviewer dashboard
+            |
+            v
+       FastAPI API
+            |
+     +------+-------+
+     |              |
+     v              v
+Deterministic QC   Guarded LangGraph agent
+     |              |
+     +------+-------+
+            v
+      Human review
+            |
+       Audit trail
+            |
+     SQLite + study-scoped
+       source snapshots
+```
+
+The deterministic QC engine remains the factual authority. The LLM selects tools for targeted questions and summarizes deterministic findings for broad investigations; it does not directly modify trial data.
+
+See `DEPLOYMENT.md` for deployment constraints and operational guidance.
