@@ -1,10 +1,16 @@
 from io import BytesIO
+import logging
+import sqlite3
+import time
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 
 from app.agents.investigation import run_investigation
+from app.config import Settings
+from app.logging_config import configure_logging
 from app.models.schemas import (
     AgentInvestigationRequest,
     AgentInvestigationResponse,
@@ -24,16 +30,20 @@ from app.services.review import review_subject, summarize_trial
 from app.services.study_repository import StudyRepository
 from app.services.validation import validate_trial
 
+settings = Settings.from_env()
+configure_logging(settings.log_level)
+logger = logging.getLogger("trialguard.api")
+
 app = FastAPI(
     title="TrialGuard AI",
-    version="0.6.0",
+    version="0.7.0",
     description=(
         "Multi-study clinical-trial QC with persistent review/audit state, "
         "guarded AI investigation, and reviewer dashboard support."
     ),
 )
 
-studies = StudyRepository()
+studies = StudyRepository(settings.data_dir)
 reviews = PersistentHumanReviewStore(studies.db_path)
 DEFAULT_DATA_FOLDER = Path("generated_data")
 
@@ -55,9 +65,77 @@ def _study_store_or_404(study_id: str):
     return store
 
 
+@app.middleware("http")
+async def request_observability(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or uuid4().hex
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        logger.exception(
+            "request_failed",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "duration_ms": duration_ms,
+            },
+        )
+        raise
+
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "request_complete",
+        extra={
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+        },
+    )
+    return response
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.6.0", "storage": "sqlite"}
+    """Liveness check: the API process is running."""
+    return {"status": "ok", "version": "0.7.0"}
+
+
+@app.get("/ready")
+def readiness():
+    """Readiness check for core deterministic/persistent functionality."""
+    checks = {"database": False, "data_dir": False}
+    try:
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        probe = settings.data_dir / ".readiness-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        checks["data_dir"] = True
+
+        with sqlite3.connect(studies.db_path) as conn:
+            conn.execute("SELECT 1").fetchone()
+        checks["database"] = True
+    except Exception as exc:
+        logger.exception("readiness_failed")
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "not_ready", "checks": checks, "error": str(exc)},
+        ) from exc
+
+    return {
+        "status": "ready",
+        "version": "0.7.0",
+        "checks": checks,
+        "agent_dependency": {
+            "type": "ollama",
+            "base_url": settings.ollama_base_url,
+            "required_for_core_readiness": False,
+        },
+    }
 
 
 @app.get("/studies", response_model=StudyListResponse)

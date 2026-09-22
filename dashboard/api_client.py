@@ -14,32 +14,23 @@ class TrialGuardAPI:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-
-    def _request(self, method: str, path: str, **kwargs):
+    def _request(self, method: str, path: str, **kwargs) -> Any:
         url = f"{self.base_url}{path}"
-
         timeout = kwargs.pop("timeout", self.timeout)
-
         try:
-            response = requests.request(
-                method,
-                url,
-                timeout=timeout,
-                **kwargs,
-            )
+            response = requests.request(method, url, timeout=timeout, **kwargs)
         except requests.RequestException as exc:
-            raise TrialGuardAPIError(str(exc)) from exc
+            raise TrialGuardAPIError(f"Could not reach TrialGuard API at {self.base_url}: {exc}") from exc
 
-        if not response.ok:
+        if response.status_code >= 400:
             try:
-                detail = response.json()
-            except Exception:
+                detail = response.json().get("detail", response.text)
+            except ValueError:
                 detail = response.text
             raise TrialGuardAPIError(f"{response.status_code}: {detail}")
 
-        if response.status_code == 204:
+        if not response.content:
             return None
-
         return response.json()
 
     def health(self) -> dict[str, Any]:
