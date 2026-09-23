@@ -9,7 +9,9 @@
 
 **A guarded AI platform for clinical-trial data quality review, investigation, and human oversight.**
 
-TrialGuard AI combines deterministic clinical-data QC with a local LangGraph/Ollama investigation agent, persistent human-review workflows, append-only audit history, and a reviewer dashboard. The central design principle is simple:
+TrialGuard AI combines deterministic clinical-data QC with a local LangGraph/Ollama investigation agent, persistent human-review workflows, append-only audit history, and a reviewer dashboard.
+
+The central design principle is simple:
 
 > **The LLM does not decide whether a clinical-data anomaly exists. Deterministic QC produces the evidence; the agent selects tools and explains that evidence; a human reviewer makes the final workflow decision.**
 
@@ -19,7 +21,9 @@ The project uses synthetic/demo clinical-trial data and is intended as an engine
 
 ## Why TrialGuard?
 
-Clinical-trial data review is a good example of where an LLM should **not** be the sole source of truth. Free-form model reasoning can be useful for investigation and explanation, but reproducible data-quality checks should remain deterministic and auditable.
+Clinical-trial data review is a good example of where an LLM should **not** be the sole source of truth.
+
+Free-form model reasoning can be useful for investigation and explanation, but reproducible data-quality checks should remain deterministic and auditable.
 
 TrialGuard separates those responsibilities:
 
@@ -147,11 +151,15 @@ rejected
 needs_followup
 ```
 
-A reviewer can add notes, and every workflow transition is recorded as an audit event. Review decisions modify workflow metadata only; they do not alter the study source datasets.
+A reviewer can add notes, and every workflow transition is recorded as an audit event.
+
+Review decisions modify workflow metadata only; they do not alter the study source datasets.
 
 ### Multi-study persistence
 
-Study metadata, human-review records, and audit events are stored in SQLite. Validated clinical source snapshots are persisted under separate study directories.
+Study metadata, human-review records, and audit events are stored in SQLite.
+
+Validated clinical source snapshots are persisted under separate study directories.
 
 ```text
 .trialguard/
@@ -184,6 +192,38 @@ The Streamlit dashboard supports:
 
 ---
 
+## Product Walkthrough
+
+### Reviewer Workspace
+
+TrialGuard provides a study-scoped review queue where deterministic QC findings can be filtered, inspected, assigned to a reviewer, and moved through the human-review workflow.
+
+![TrialGuard reviewer workspace](docs/screenshots/review-queue.png)
+
+### Human Review and Audit Trail
+
+Each deterministic finding can be reviewed without modifying the underlying clinical source data.
+
+Reviewer identity, decision status, notes, and workflow transitions are persisted in the audit trail.
+
+![TrialGuard finding review and audit trail](docs/screenshots/finding-audit.png)
+
+### Guarded AI Investigation
+
+The LangGraph investigation agent answers broad or targeted questions while remaining grounded in deterministic QC tools.
+
+Broad investigations force complete QC coverage before the model summarizes the evidence.
+
+![TrialGuard guarded AI investigation](docs/screenshots/ai-investigation.png)
+
+### Study Overview
+
+Study-level summaries provide visibility into finding severity, clinical domain, and QC-rule distributions.
+
+![TrialGuard study overview](docs/screenshots/study-overview.png)
+
+---
+
 ## Synthetic Benchmark
 
 TrialGuard includes a reproducible synthetic benchmark generator with seeded ground-truth anomalies.
@@ -206,7 +246,9 @@ Result for the included 200-subject synthetic benchmark:
 | Recall | **1.000** |
 | F1 | **1.000** |
 
-**Important:** these results demonstrate that the deterministic engine correctly detects the anomaly patterns deliberately seeded into this synthetic benchmark. They are **not** an estimate of performance on real-world clinical-trial data.
+**Important:** these results demonstrate that the deterministic engine correctly detects the anomaly patterns deliberately seeded into this synthetic benchmark.
+
+They are **not** an estimate of performance on real-world clinical-trial data.
 
 ---
 
@@ -291,7 +333,9 @@ Dashboard:
 http://localhost:8501
 ```
 
-### Option 2 — Docker Compose
+---
+
+## Docker Compose
 
 Make sure Docker Desktop and Ollama are running.
 
@@ -326,13 +370,14 @@ A simple end-to-end demo:
 3. Synchronize deterministic QC findings into the review queue.
 4. Open a finding and inspect its evidence.
 5. Assign a reviewer and mark the finding `approved`, `rejected`, or `needs_followup`.
-6. Confirm the audit event was persisted.
-7. Open **AI Investigation**.
-8. Ask a broad question such as:
+6. Add a reviewer note.
+7. Confirm the audit event was persisted.
+8. Open **AI Investigation**.
+9. Ask a broad question such as:
    > Investigate this subject for possible data-quality issues.
-9. Ask a targeted question such as:
-   > Are there duplicate adverse events for this subject?
-10. Restart the application and confirm the study and review state remain available.
+10. Ask a targeted question such as:
+    > Are there duplicate adverse events for this subject?
+11. Restart the application and confirm the study and review state remain available.
 
 ---
 
@@ -416,7 +461,9 @@ SQLite stores:
 
 Study-scoped CSV snapshots are stored under the same persistent application data root.
 
-This architecture is deliberately simple for a portfolio/demo deployment. Horizontal scaling would require a shared transactional database such as PostgreSQL plus shared/object storage for clinical source snapshots.
+This architecture is deliberately simple for a portfolio/demo deployment.
+
+Horizontal scaling would require a shared transactional database such as PostgreSQL plus shared/object storage for clinical source snapshots.
 
 See [`DEPLOYMENT.md`](DEPLOYMENT.md) for operational notes.
 
@@ -456,6 +503,12 @@ trialguard-ai/
 │   ├── app.py             # Streamlit reviewer workspace
 │   ├── api_client.py
 │   └── utils.py
+├── docs/
+│   └── screenshots/
+│       ├── review-queue.png
+│       ├── finding-audit.png
+│       ├── ai-investigation.png
+│       └── study-overview.png
 ├── evals/
 │   └── evaluate_qc.py
 ├── synthetic_data/
@@ -491,15 +544,3 @@ These boundaries make the AI layer useful without making it the uncontrolled sou
 ## Author
 
 Built by [Rohan Singh](https://github.com/rohansingh72) as an applied AI / clinical-data engineering portfolio project.
-
-<!--
-## Screenshots
-
-Add these after capturing the final dashboard:
-
-![Reviewer Dashboard](docs/screenshots/reviewer-dashboard.png)
-
-![Finding Review and Audit Trail](docs/screenshots/finding-review.png)
-
-![AI Investigation](docs/screenshots/ai-investigation.png)
--->
