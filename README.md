@@ -1,508 +1,546 @@
-# TrialGuard AI — Milestone 1.1
+# TrialGuard AI
 
-This version adds real CSV upload, schema validation, subject-level review, and trial-level QC summaries.
+[![CI](https://github.com/rohansingh72/trialguard-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/rohansingh72/trialguard-ai/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.11-3776AB)
+![FastAPI](https://img.shields.io/badge/FastAPI-API-009688)
+![LangGraph](https://img.shields.io/badge/LangGraph-Agentic%20Workflow-1C3C3C)
+![Streamlit](https://img.shields.io/badge/Streamlit-Dashboard-FF4B4B)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED)
 
-## Run
+**A guarded AI platform for clinical-trial data quality review, investigation, and human oversight.**
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python synthetic_data/generate.py
-pytest
-uvicorn app.main:app --reload
-```
+TrialGuard AI combines deterministic clinical-data QC with a local LangGraph/Ollama investigation agent, persistent human-review workflows, append-only audit history, and a reviewer dashboard.
 
-Open `http://127.0.0.1:8000/docs`.
+The central design principle is simple:
 
-## New endpoints
+> **The LLM does not decide whether a clinical-data anomaly exists. Deterministic QC produces the evidence; the agent selects tools and explains that evidence; a human reviewer makes the final workflow decision.**
 
-- `POST /upload-trial`
-- `GET /trial/validation`
-- `GET /trial/summary`
-- `GET /subjects/{subject_id}/review`
-
-`POST /upload-trial` accepts four CSV files: `dm`, `ae`, `lb`, and `ex`.
-
-## Expected demo summary
-
-The seeded demo trial contains 3 subjects and 5 total findings: one each for AE001, AE002, LB001, EX001, and DM001.
-
+The project uses synthetic/demo clinical-trial data and is intended as an engineering portfolio project, not as validated software for clinical or regulatory use.
 
 ---
 
-# Milestone 1.2 — Benchmarking
+## Why TrialGuard?
 
-This milestone adds a reproducible synthetic benchmark with known seeded anomalies.
+Clinical-trial data review is a good example of where an LLM should **not** be the sole source of truth.
 
-Generate a benchmark:
+Free-form model reasoning can be useful for investigation and explanation, but reproducible data-quality checks should remain deterministic and auditable.
+
+TrialGuard separates those responsibilities:
+
+- **Deterministic QC** detects defined anomalies from structured trial data.
+- **Guarded AI orchestration** chooses review tools for targeted questions and summarizes deterministic evidence.
+- **Human-in-the-loop review** supports approval, rejection, follow-up, notes, and audit history.
+- **Persistent study isolation** keeps studies, review state, and audit records separate across restarts.
+- **Production-oriented infrastructure** adds Docker Compose, CI, health/readiness checks, request IDs, and structured logging.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TD
+    U[Reviewer] --> UI[Streamlit Dashboard]
+    UI --> API[FastAPI]
+
+    API --> REPO[Study Repository]
+    REPO --> SNAP[Study-scoped DM / AE / LB / EX snapshots]
+    REPO --> DB[(SQLite)]
+
+    API --> QC[Deterministic QC Engine]
+    SNAP --> QC
+
+    API --> AGENT[Guarded LangGraph Agent]
+    AGENT --> OLLAMA[Local Ollama LLM]
+    AGENT --> TOOLS[QC Review Tools]
+    TOOLS --> QC
+
+    QC --> FINDINGS[Structured Findings]
+    FINDINGS --> REVIEW[Human Review Workflow]
+    AGENT --> EXPLAIN[Evidence-grounded Explanation]
+
+    REVIEW --> AUDIT[Append-only Audit Events]
+    AUDIT --> DB
+    REVIEW --> DB
+
+    EXPLAIN --> UI
+    REVIEW --> UI
+```
+
+### Safety boundary
+
+The clinical source snapshots are read-only within the review workflow.
+
+```text
+Clinical data
+     ↓
+Deterministic QC
+     ↓
+Structured evidence
+     ↓
+Guarded agent explanation
+     ↓
+Human review
+     ↓
+Review state + audit trail
+
+No LLM-driven mutation of DM / AE / LB / EX
+```
+
+For a **broad subject investigation**, TrialGuard forces deterministic review across all implemented QC domains before the LLM summarizes the evidence.
+
+For a **targeted question**, the LangGraph agent can select only the relevant deterministic tools.
+
+---
+
+## Core Capabilities
+
+### Clinical-data ingestion and validation
+
+TrialGuard accepts study-scoped CSV datasets for:
+
+- `DM` — Demographics
+- `AE` — Adverse Events
+- `LB` — Laboratory Results
+- `EX` — Exposure
+
+Required schemas are validated before a study is persisted.
+
+### Deterministic QC engine
+
+The current portfolio release implements five QC rules:
+
+| Rule | Domain | Check |
+|---|---|---|
+| `AE001` | AE | Treatment-emergent AE begins before first recorded dose |
+| `AE002` | AE | Potential duplicate adverse-event records |
+| `LB001` | LB | Potassium < 3.0 mmol/L without a potassium-related AE |
+| `EX001` | EX | Exposure recorded after subject discontinuation |
+| `DM001` | DM | Birth date occurs after informed consent |
+
+The rule set is intentionally small and transparent so the focus remains on system architecture, evidence flow, evaluation, and human oversight.
+
+### Guarded AI investigation
+
+The agent layer uses:
+
+- **LangGraph** for orchestration
+- **Ollama** for local model execution
+- `llama3.2:3b` as the default model
+- deterministic QC functions exposed as read-only investigation tools
+
+Example targeted question:
+
+> Are there duplicate adverse events for this subject?
+
+The agent can route to the AE review tool rather than running unrelated checks.
+
+Example broad question:
+
+> Investigate this subject for possible data-quality issues.
+
+TrialGuard forces comprehensive deterministic QC coverage before the model produces a summary.
+
+### Human review and audit trail
+
+Each QC finding can move through:
+
+```text
+pending
+approved
+rejected
+needs_followup
+```
+
+A reviewer can add notes, and every workflow transition is recorded as an audit event.
+
+Review decisions modify workflow metadata only; they do not alter the study source datasets.
+
+### Multi-study persistence
+
+Study metadata, human-review records, and audit events are stored in SQLite.
+
+Validated clinical source snapshots are persisted under separate study directories.
+
+```text
+.trialguard/
+├── trialguard.db
+└── studies/
+    ├── STUDY-*/
+    │   ├── DM.csv
+    │   ├── AE.csv
+    │   ├── LB.csv
+    │   └── EX.csv
+    └── ...
+```
+
+Review state survives API restarts.
+
+### Reviewer dashboard
+
+The Streamlit dashboard supports:
+
+- persisted study selection
+- study-level QC metrics
+- deterministic finding synchronization
+- filtering by status, severity, domain, and subject
+- evidence inspection
+- approve / reject / follow-up actions
+- reviewer notes
+- audit-history viewing
+- guarded AI subject investigation
+- study-level finding distributions
+
+---
+
+## Product Walkthrough
+
+### Reviewer Workspace
+
+TrialGuard provides a study-scoped review queue where deterministic QC findings can be filtered, inspected, assigned to a reviewer, and moved through the human-review workflow.
+
+![TrialGuard reviewer workspace](docs/screenshots/review-queue.png)
+
+### Human Review and Audit Trail
+
+Each deterministic finding can be reviewed without modifying the underlying clinical source data.
+
+Reviewer identity, decision status, notes, and workflow transitions are persisted in the audit trail.
+
+![TrialGuard finding review and audit trail](docs/screenshots/finding-audit.png)
+
+### Guarded AI Investigation
+
+The LangGraph investigation agent answers broad or targeted questions while remaining grounded in deterministic QC tools.
+
+Broad investigations force complete QC coverage before the model summarizes the evidence.
+
+![TrialGuard guarded AI investigation](docs/screenshots/ai-investigation.png)
+
+### Study Overview
+
+Study-level summaries provide visibility into finding severity, clinical domain, and QC-rule distributions.
+
+![TrialGuard study overview](docs/screenshots/study-overview.png)
+
+---
+
+## Synthetic Benchmark
+
+TrialGuard includes a reproducible synthetic benchmark generator with seeded ground-truth anomalies.
 
 ```bash
 python synthetic_data/generate_benchmark.py --subjects 200 --seed 42
-```
-
-This creates:
-
-```text
-benchmark_data/
-├── DM.csv
-├── AE.csv
-├── LB.csv
-├── EX.csv
-├── ground_truth.csv
-└── metadata.json
-```
-
-Evaluate the QC engine:
-
-```bash
 python evals/evaluate_qc.py --data benchmark_data
 ```
 
-The evaluator compares predicted `(subject_id, rule_id)` pairs against the seeded ground truth and reports:
+Result for the included 200-subject synthetic benchmark:
 
-- true positives
-- false positives
-- false negatives
-- precision
-- recall
-- F1
+| Metric | Result |
+|---|---:|
+| Ground-truth anomalies | 50 |
+| Predicted anomalies | 50 |
+| True positives | 50 |
+| False positives | 0 |
+| False negatives | 0 |
+| Precision | **1.000** |
+| Recall | **1.000** |
+| F1 | **1.000** |
 
-Run the full test suite with:
+**Important:** these results demonstrate that the deterministic engine correctly detects the anomaly patterns deliberately seeded into this synthetic benchmark.
 
-```bash
-python -m pytest
-```
-
-This benchmark becomes the baseline we will use later to test whether the agent/LLM layer improves investigation quality without increasing hallucinations or false positives.
+They are **not** an estimate of performance on real-world clinical-trial data.
 
 ---
 
-# Milestone 2.0 — LangGraph Investigation Agent
+## Tech Stack
 
-TrialGuard now adds a read-only LangGraph investigation layer over the deterministic QC engine.
+| Layer | Technology |
+|---|---|
+| API | FastAPI |
+| Language | Python 3.11 |
+| Structured data | pandas |
+| Validation | Pydantic |
+| Agent orchestration | LangGraph |
+| Local LLM | Ollama / `llama3.2:3b` |
+| Reviewer UI | Streamlit |
+| Persistence | SQLite + study-scoped CSV snapshots |
+| Testing | pytest |
+| Containers | Docker / Docker Compose |
+| CI | GitHub Actions |
+| Observability | JSON structured logs + `X-Request-ID` |
+| Health checks | `/health` + `/ready` |
 
-The LLM does **not** replace QC logic. It chooses which deterministic tools to call and explains the evidence those tools return.
+---
 
-```text
-User question
-     |
-     v
-LangGraph agent (Ollama)
-     |
-     +--> Subject overview
-     +--> AE QC
-     +--> Lab QC
-     +--> Exposure QC
-     +--> Demographic QC
-     |
-     v
-Evidence-grounded explanation
-     |
-     v
-Human review
+## Quick Start
+
+### Option 1 — Local development
+
+#### 1. Clone and create the environment
+
+```bash
+git clone https://github.com/rohansingh72/trialguard-ai.git
+cd trialguard-ai
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-## Local model
+On Windows PowerShell:
 
-The default model is:
-
-```text
-llama3.2:3b
+```powershell
+.venv\Scripts\Activate.ps1
 ```
 
-Confirm Ollama is running and the model is installed:
+#### 2. Start Ollama
 
 ```bash
 ollama pull llama3.2:3b
 ollama list
 ```
 
-Optional environment variables:
-
-```bash
-export TRIALGUARD_OLLAMA_MODEL=llama3.2:3b
-export TRIALGUARD_OLLAMA_BASE_URL=http://127.0.0.1:11434
-```
-
-## Install updated dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-## Tests
-
-```bash
-python -m pytest
-```
-
-The deterministic benchmark remains separate from the LLM layer.
-
-## Agent smoke test
-
-First generate/load demo data if needed:
+#### 3. Generate demo data
 
 ```bash
 python synthetic_data/generate.py
-python scripts_agent_smoke.py
 ```
 
-## FastAPI
+#### 4. Start the API
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-Open:
+Swagger:
 
 ```text
 http://127.0.0.1:8000/docs
 ```
 
-Run `POST /load-demo-data`, then call:
+#### 5. Start the dashboard
 
-```text
-POST /agent/investigate
-```
-
-Example body:
-
-```json
-{
-  "subject_id": "TG-001",
-  "question": "Investigate this subject for possible data-quality issues."
-}
-```
-
-The response contains both the final explanation and `tools_used`, which gives us a simple audit trail of the agent's decisions.
-
-## Safety boundary
-
-The agent is read-only. It cannot modify the trial datasets. Deterministic QC remains the source of factual anomaly detection, while the LLM is limited to orchestration and explanation.
-
-## Agent guardrail update
-
-Broad subject investigations now force coverage of every implemented deterministic QC domain before the LLM writes a summary. Narrow questions still use model-directed tool selection.
-
-Raw subject rows are no longer supplied to the LLM for free-form interpretation during broad QC. The LLM receives deterministic finding objects plus record counts, which prevents unsupported reinterpretation of laboratory codes or values.
-
-Expected broad smoke-test tool coverage:
-
-```text
-get_subject_overview
-review_adverse_events
-review_labs
-review_exposure
-review_demographics
-```
-
----
-
-# Milestone 3 — Human Review and Audit Trail
-
-Milestone 3 adds a human-in-the-loop review workflow on top of deterministic QC and the guarded LangGraph investigation agent.
-
-## Design principle
-
-Clinical source data remain read-only. A reviewer changes only the status of a QC finding; DM, AE, LB, and EX are never silently edited by this workflow.
-
-## Review statuses
-
-- `pending`
-- `approved`
-- `rejected`
-- `needs_followup`
-
-## New endpoints
-
-- `POST /human-review/sync` — snapshot current deterministic QC findings into the review queue.
-- `GET /human-review/findings` — list review records; optionally filter with `?status=pending`.
-- `GET /human-review/findings/{finding_id}` — retrieve one review record.
-- `PATCH /human-review/findings/{finding_id}` — update status, reviewer, and note.
-- `GET /human-review/findings/{finding_id}/audit` — retrieve the append-only audit events for the finding.
-
-## Demo flow
+In a second terminal:
 
 ```bash
-python synthetic_data/generate.py
-uvicorn app.main:app --reload
+source .venv/bin/activate
+python -m streamlit run dashboard/app.py
 ```
 
-In Swagger:
-
-1. `POST /load-demo-data`
-2. `POST /human-review/sync`
-3. `GET /human-review/findings`
-4. Copy a `finding_id`
-5. `PATCH /human-review/findings/{finding_id}` with:
-
-```json
-{
-  "status": "needs_followup",
-  "reviewer": "Rohan",
-  "note": "Verify against source before closing."
-}
-```
-
-6. `GET /human-review/findings/{finding_id}/audit`
-
-The audit endpoint should show the original `created` event plus the subsequent `review_updated` event.
-
-## Local smoke test
-
-```bash
-python synthetic_data/generate.py
-python scripts_human_review_smoke.py
-```
-
-## Important limitation
-
-Review state is still in memory in Milestone 3. Restarting the API clears it. Milestone 4 will move trial metadata, review records, and audit events into a persistent database and add study-level separation.
-
----
-
-# Milestone 4 — Persistent multi-study storage
-
-Milestone 4 removes the single global in-memory study limitation.
-
-## What changed
-
-- SQLite-backed study registry.
-- Study-scoped persisted source datasets under `.trialguard/studies/<study_id>/`.
-- Review decisions persist across API restarts.
-- Audit events persist across API restarts.
-- Every QC/review route is explicitly scoped to a `study_id`.
-- Identical findings in different studies receive different finding IDs.
-- `.trialguard/` is ignored by Git.
-
-Clinical source CSVs remain immutable snapshots. SQLite stores study metadata and workflow state; reviewer decisions never silently modify DM/AE/LB/EX.
-
-## New API flow
-
-```text
-POST /studies/demo
-        ↓
-returns STUDY-XXXXXXXX
-        ↓
-GET /studies/{study_id}/subjects
-GET /studies/{study_id}/summary
-POST /studies/{study_id}/human-review/sync
-PATCH /studies/{study_id}/human-review/findings/{finding_id}
-        ↓
-restart FastAPI
-        ↓
-review state is still present
-```
-
-You can also create a study from four uploaded CSVs with `POST /studies/upload`.
-
-## Local run
-
-```bash
-python synthetic_data/generate.py
-python -m pytest
-python scripts_persistence_smoke.py
-uvicorn app.main:app --reload
-```
-
-The default persistent data directory is `.trialguard/`. To put it elsewhere:
-
-```bash
-export TRIALGUARD_DATA_DIR=/path/to/trialguard-data
-```
-
-## Swagger smoke test
-
-1. `POST /studies/demo`
-2. Copy the returned `study_id`.
-3. `GET /studies`
-4. `GET /studies/{study_id}/subjects`
-5. `POST /studies/{study_id}/human-review/sync`
-6. `GET /studies/{study_id}/human-review/findings`
-7. Update one finding.
-8. Stop and restart Uvicorn.
-9. Repeat `GET /studies` and the finding endpoint. The study and review decision should still exist.
-
-## Architecture
-
-```text
-                    ┌───────────────────────┐
-CSV upload/demo ───►│ Study Repository      │
-                    │ SQLite study metadata │
-                    └──────────┬────────────┘
-                               │
-                               ▼
-                 .trialguard/studies/STUDY-*/
-                      DM / AE / LB / EX
-                               │
-                               ▼
-                    Deterministic QC engine
-                               │
-                  ┌────────────┴────────────┐
-                  ▼                         ▼
-             Guarded agent          Persistent review
-                                    + audit in SQLite
-```
-
-## Next milestone
-
-Milestone 5 adds a reviewer-facing web dashboard over these study-scoped APIs.
-
----
-
-# Milestone 5 — Reviewer Dashboard
-
-Milestone 5 adds a Streamlit reviewer workspace on top of the persistent FastAPI backend.
-
-## Dashboard capabilities
-
-- Select among persisted studies.
-- View study-level QC metrics.
-- Synchronize deterministic QC findings into the human-review queue.
-- Filter findings by status, severity, domain, and subject.
-- Inspect deterministic evidence for an individual finding.
-- Approve, reject, or mark findings as needing follow-up.
-- Add reviewer notes.
-- View the append-only audit history.
-- Run the guarded AI investigation workflow from the same UI.
-- View study-level finding distributions by severity, domain, and rule.
-
-The dashboard does **not** mutate clinical source data. Review actions update only the persisted review state and audit trail.
-
-## Run the dashboard
-
-Start the API in terminal 1:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-Start the dashboard in terminal 2:
-
-```bash
-streamlit run dashboard/app.py
-```
-
-or:
-
-```bash
-./run_dashboard.sh
-```
-
-Then open the Streamlit URL shown in the terminal, normally:
+Dashboard:
 
 ```text
 http://localhost:8501
 ```
 
-The default API address is:
-
-```text
-http://127.0.0.1:8000
-```
-
-You can override it with:
-
-```bash
-export TRIALGUARD_API_URL=http://127.0.0.1:8000
-```
-
-## Suggested demo flow
-
-1. Generate the demo data if needed:
-   `python synthetic_data/generate.py`
-2. Start FastAPI.
-3. Start Streamlit.
-4. Create or select a demo study.
-5. Click **Sync deterministic findings**.
-6. Open an `AE001`, `LB001`, or `EX001` finding.
-7. Set a reviewer, choose a review decision, add a note, and save.
-8. Confirm the audit history records the review transition.
-9. Open **AI Investigation** and investigate a subject.
-
-## Architecture
-
-```text
-                    Reviewer
-                       |
-                       v
-                Streamlit dashboard
-                       |
-                       v
-                    FastAPI
-             _________|___________
-            |         |           |
-            v         v           v
-       QC engine   AI agent   Review service
-            |         |           |
-            |         |           v
-            |         |      SQLite audit log
-            |         |
-            v         v
-       Study-scoped persisted clinical data
-```
-
-Milestone 6 will focus on production hardening: Docker Compose, CI, health/observability, structured logging, and deployability.
-
 ---
 
-# Milestone 6 — Production Readiness
+## Docker Compose
 
-Milestone 6 completes the core TrialGuard portfolio build.
-
-## Production-oriented additions
-
-- Docker image for API and dashboard
-- Docker Compose orchestration
-- persistent named volume for SQLite + study snapshots
-- centralized environment-based configuration
-- JSON structured request logging
-- request IDs via `X-Request-ID`
-- `/health` liveness endpoint
-- `/ready` storage/database readiness endpoint
-- GitHub Actions CI for compile, tests, and Docker build
-- documented single-instance SQLite deployment constraint
-- deployment notes in `DEPLOYMENT.md`
-
-## Local container run
-
-Make sure Ollama is running on the host, then:
+Make sure Docker Desktop and Ollama are running.
 
 ```bash
-cp .env.example .env
+ollama pull llama3.2:3b
 docker compose up --build
 ```
 
 Open:
 
-- Dashboard: http://localhost:8501
-- API docs: http://localhost:8000/docs
-- Readiness: http://localhost:8000/ready
+- Dashboard: `http://localhost:8501`
+- Swagger: `http://localhost:8000/docs`
+- Liveness: `http://localhost:8000/health`
+- Readiness: `http://localhost:8000/ready`
 
-## Portfolio architecture
+If the API container needs to reach Ollama running on the host, use:
 
 ```text
-Streamlit reviewer dashboard
-            |
-            v
-       FastAPI API
-            |
-     +------+-------+
-     |              |
-     v              v
-Deterministic QC   Guarded LangGraph agent
-     |              |
-     +------+-------+
-            v
-      Human review
-            |
-       Audit trail
-            |
-     SQLite + study-scoped
-       source snapshots
+TRIALGUARD_OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
 
-The deterministic QC engine remains the factual authority. The LLM selects tools for targeted questions and summarizes deterministic findings for broad investigations; it does not directly modify trial data.
+Application state is persisted in the Docker named volume `trialguard-data`.
 
-See `DEPLOYMENT.md` for deployment constraints and operational guidance.
+---
+
+## Demo Workflow
+
+A simple end-to-end demo:
+
+1. Generate the bundled synthetic data.
+2. Create a demo study from the dashboard or `POST /studies/demo`.
+3. Synchronize deterministic QC findings into the review queue.
+4. Open a finding and inspect its evidence.
+5. Assign a reviewer and mark the finding `approved`, `rejected`, or `needs_followup`.
+6. Add a reviewer note.
+7. Confirm the audit event was persisted.
+8. Open **AI Investigation**.
+9. Ask a broad question such as:
+   > Investigate this subject for possible data-quality issues.
+10. Ask a targeted question such as:
+    > Are there duplicate adverse events for this subject?
+11. Restart the application and confirm the study and review state remain available.
+
+---
+
+## API Highlights
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/health` | Process liveness |
+| `GET` | `/ready` | Database/storage readiness |
+| `GET` | `/studies` | List persisted studies |
+| `POST` | `/studies/demo` | Create study from bundled demo data |
+| `POST` | `/studies/upload` | Create study from DM/AE/LB/EX CSVs |
+| `GET` | `/studies/{study_id}/summary` | Trial-level QC summary |
+| `GET` | `/studies/{study_id}/subjects/{subject_id}/review` | Deterministic subject review |
+| `POST` | `/studies/{study_id}/agent/investigate` | Guarded AI investigation |
+| `POST` | `/studies/{study_id}/human-review/sync` | Sync QC findings into review queue |
+| `GET` | `/studies/{study_id}/human-review/findings` | List review records |
+| `PATCH` | `/studies/{study_id}/human-review/findings/{finding_id}` | Save reviewer decision |
+| `GET` | `/studies/{study_id}/human-review/findings/{finding_id}/audit` | Retrieve audit history |
+
+Full interactive API documentation is available through FastAPI Swagger at `/docs`.
+
+---
+
+## Testing
+
+Run the full suite:
+
+```bash
+python -m pytest
+```
+
+Run the deterministic benchmark:
+
+```bash
+python synthetic_data/generate_benchmark.py --subjects 200 --seed 42
+python evals/evaluate_qc.py --data benchmark_data
+```
+
+Additional smoke-test scripts cover the agent, human-review workflow, and persistence:
+
+```bash
+python scripts_agent_smoke.py
+python scripts_human_review_smoke.py
+python scripts_persistence_smoke.py
+```
+
+---
+
+## CI and Observability
+
+GitHub Actions runs on pushes to `main` and milestone branches and on pull requests to `main`.
+
+The CI pipeline performs:
+
+- Python source compilation
+- full pytest execution
+- Docker image build
+
+The API also provides:
+
+- JSON structured request logs
+- per-request `X-Request-ID`
+- response status and request-duration logging
+- `/health` liveness
+- `/ready` persistence/database readiness
+
+The Ollama dependency does not block core readiness because deterministic QC and human review remain usable without the agent service.
+
+---
+
+## Deployment Model
+
+The current portfolio release is designed for **one API instance with persistent storage**.
+
+SQLite stores:
+
+- study registry metadata
+- human-review state
+- audit events
+
+Study-scoped CSV snapshots are stored under the same persistent application data root.
+
+This architecture is deliberately simple for a portfolio/demo deployment.
+
+Horizontal scaling would require a shared transactional database such as PostgreSQL plus shared/object storage for clinical source snapshots.
+
+See [`DEPLOYMENT.md`](DEPLOYMENT.md) for operational notes.
+
+---
+
+## Limitations and Intended Use
+
+TrialGuard is an engineering portfolio project using synthetic/demo data.
+
+It is **not** validated for production clinical-trial use and does not currently implement all controls that would be required for handling real regulated clinical data, including areas such as:
+
+- authentication and role-based authorization
+- enterprise secret management
+- regulated validation and change-control procedures
+- comprehensive privacy/security controls
+- production backup and disaster recovery
+- electronic-signature requirements
+- full CDISC/SDTM semantic validation
+- horizontally scalable persistence
+
+The deterministic rules are examples of an extensible QC framework rather than a comprehensive clinical-data rule library.
+
+---
+
+## Repository Structure
+
+```text
+trialguard-ai/
+├── app/
+│   ├── agents/            # LangGraph investigation workflow
+│   ├── models/            # Pydantic schemas
+│   ├── services/          # study, QC, persistence, review services
+│   ├── tools/             # deterministic QC tools
+│   ├── config.py
+│   └── main.py            # FastAPI application
+├── dashboard/
+│   ├── app.py             # Streamlit reviewer workspace
+│   ├── api_client.py
+│   └── utils.py
+├── docs/
+│   └── screenshots/
+│       ├── review-queue.png
+│       ├── finding-audit.png
+│       ├── ai-investigation.png
+│       └── study-overview.png
+├── evals/
+│   └── evaluate_qc.py
+├── synthetic_data/
+│   ├── generate.py
+│   └── generate_benchmark.py
+├── tests/
+├── .github/workflows/ci.yml
+├── docker-compose.yml
+├── Dockerfile
+├── DEPLOYMENT.md
+└── requirements.txt
+```
+
+---
+
+## Design Takeaways
+
+TrialGuard was built around three engineering decisions:
+
+1. **Deterministic rules remain the factual authority.**  
+   The LLM does not independently invent clinical-data findings.
+
+2. **Agentic behavior is constrained by workflow context.**  
+   Broad investigations force comprehensive QC coverage; targeted questions can use selective tool routing.
+
+3. **Human decisions are explicit and auditable.**  
+   Review status and notes are persisted separately from immutable clinical source snapshots.
+
+These boundaries make the AI layer useful without making it the uncontrolled source of truth.
+
+---
+
+## Author
+
+Built by [Rohan Singh](https://github.com/rohansingh72) as an applied AI / clinical-data engineering portfolio project.
