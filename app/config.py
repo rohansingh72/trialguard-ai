@@ -9,6 +9,7 @@ def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None:
         return default
+
     try:
         return int(raw)
     except ValueError:
@@ -18,6 +19,7 @@ def _env_int(name: str, default: int) -> int:
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
+    database_url: str | None
     ollama_model: str
     ollama_base_url: str
     log_level: str
@@ -26,8 +28,13 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        database_url = os.getenv("TRIALGUARD_DATABASE_URL")
+        if database_url is not None:
+            database_url = database_url.strip() or None
+
         return cls(
             data_dir=Path(os.getenv("TRIALGUARD_DATA_DIR", ".trialguard")),
+            database_url=database_url,
             ollama_model=os.getenv("TRIALGUARD_OLLAMA_MODEL", "llama3.2:3b"),
             ollama_base_url=os.getenv(
                 "TRIALGUARD_OLLAMA_BASE_URL",

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Mapping
 from uuid import uuid4
 
+from sqlalchemy import text
+
 from app.models.schemas import AuditEvent, Finding, ReviewRecord, ReviewStatus
+from app.services.database import create_database_engine, database_url_from_target
 from app.services.review import summarize_trial
 
 
@@ -23,6 +26,10 @@ def _parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
+def _enum_value(value):
+    return getattr(value, "value", value)
+
+
 def study_finding_id_for(study_id: str, finding: Finding) -> str:
     payload = {
         "study_id": study_id,
@@ -31,160 +38,275 @@ def study_finding_id_for(study_id: str, finding: Finding) -> str:
         "domain": finding.domain,
         "evidence": finding.evidence,
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
     return f"F-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
 
 
 class PersistentHumanReviewStore:
-    """SQLite-backed review queue and append-only audit log, scoped by study."""
+    """
+    Persistent human-review queue and append-only audit log.
 
-    def __init__(self, db_path: str | Path) -> None:
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+    Supports SQLite for local development/testing and PostgreSQL
+    for production deployments.
+    """
+
+    def __init__(self, database: str | Path) -> None:
+        self.database_url = database_url_from_target(database)
+        self.engine = create_database_engine(self.database_url)
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
-
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with self.engine.begin() as conn:
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS review_records (
-                    study_id TEXT NOT NULL,
-                    finding_id TEXT NOT NULL,
-                    finding_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    reviewer TEXT,
-                    note TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY(study_id, finding_id)
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS review_records (
+                        study_id TEXT NOT NULL,
+                        finding_id TEXT NOT NULL,
+                        finding_json TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        reviewer TEXT,
+                        note TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY(study_id, finding_id)
+                    )
+                    """
                 )
-                """
             )
+
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS audit_events (
-                    event_id TEXT PRIMARY KEY,
-                    study_id TEXT NOT NULL,
-                    finding_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    previous_status TEXT,
-                    new_status TEXT NOT NULL,
-                    reviewer TEXT NOT NULL,
-                    note TEXT,
-                    timestamp TEXT NOT NULL
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS audit_events (
+                        event_id TEXT PRIMARY KEY,
+                        study_id TEXT NOT NULL,
+                        finding_id TEXT NOT NULL,
+                        event_type TEXT NOT NULL,
+                        previous_status TEXT,
+                        new_status TEXT NOT NULL,
+                        reviewer TEXT NOT NULL,
+                        note TEXT,
+                        timestamp TEXT NOT NULL
+                    )
+                    """
                 )
-                """
             )
+
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_review_study_status "
-                "ON review_records(study_id, status)"
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_review_study_status
+                    ON review_records(study_id, status)
+                    """
+                )
             )
+
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_audit_study_finding "
-                "ON audit_events(study_id, finding_id, timestamp)"
+                text(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_audit_study_finding
+                    ON audit_events(study_id, finding_id, timestamp)
+                    """
+                )
             )
 
     @staticmethod
-    def _record_from_row(row: sqlite3.Row) -> ReviewRecord:
+    def _record_from_row(row: Mapping[str, object]) -> ReviewRecord:
         return ReviewRecord(
-            finding_id=row["finding_id"],
-            finding=Finding.model_validate_json(row["finding_json"]),
-            status=row["status"],
-            reviewer=row["reviewer"],
-            note=row["note"],
-            created_at=_parse_dt(row["created_at"]),
-            updated_at=_parse_dt(row["updated_at"]),
+            finding_id=str(row["finding_id"]),
+            finding=Finding.model_validate_json(str(row["finding_json"])),
+            status=str(row["status"]),
+            reviewer=(
+                str(row["reviewer"]) if row["reviewer"] is not None else None
+            ),
+            note=str(row["note"]) if row["note"] is not None else None,
+            created_at=_parse_dt(str(row["created_at"])),
+            updated_at=_parse_dt(str(row["updated_at"])),
         )
 
     def sync_from_trial(self, study_id: str, trial_store) -> tuple[int, int]:
         summary = summarize_trial(trial_store)
         created = 0
 
-        with self._connect() as conn:
+        with self.engine.begin() as conn:
             for subject_review in summary.subject_summaries:
                 for finding in subject_review.findings:
                     finding_id = study_finding_id_for(study_id, finding)
+
                     exists = conn.execute(
-                        "SELECT 1 FROM review_records WHERE study_id=? AND finding_id=?",
-                        (study_id, finding_id),
-                    ).fetchone()
+                        text(
+                            """
+                            SELECT 1
+                            FROM review_records
+                            WHERE study_id = :study_id
+                              AND finding_id = :finding_id
+                            """
+                        ),
+                        {
+                            "study_id": study_id,
+                            "finding_id": finding_id,
+                        },
+                    ).first()
+
                     if exists:
                         continue
 
                     now = _utc_now()
+
                     conn.execute(
-                        """
-                        INSERT INTO review_records(
-                            study_id, finding_id, finding_json, status, reviewer,
-                            note, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            study_id,
-                            finding_id,
-                            finding.model_dump_json(),
-                            "pending",
-                            None,
-                            None,
-                            _as_iso(now),
-                            _as_iso(now),
+                        text(
+                            """
+                            INSERT INTO review_records(
+                                study_id,
+                                finding_id,
+                                finding_json,
+                                status,
+                                reviewer,
+                                note,
+                                created_at,
+                                updated_at
+                            )
+                            VALUES (
+                                :study_id,
+                                :finding_id,
+                                :finding_json,
+                                :status,
+                                :reviewer,
+                                :note,
+                                :created_at,
+                                :updated_at
+                            )
+                            """
                         ),
+                        {
+                            "study_id": study_id,
+                            "finding_id": finding_id,
+                            "finding_json": finding.model_dump_json(),
+                            "status": "pending",
+                            "reviewer": None,
+                            "note": None,
+                            "created_at": _as_iso(now),
+                            "updated_at": _as_iso(now),
+                        },
                     )
+
                     conn.execute(
-                        """
-                        INSERT INTO audit_events(
-                            event_id, study_id, finding_id, event_type,
-                            previous_status, new_status, reviewer, note, timestamp
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            str(uuid4()),
-                            study_id,
-                            finding_id,
-                            "created",
-                            None,
-                            "pending",
-                            "system",
-                            "Finding synchronized from deterministic QC.",
-                            _as_iso(now),
+                        text(
+                            """
+                            INSERT INTO audit_events(
+                                event_id,
+                                study_id,
+                                finding_id,
+                                event_type,
+                                previous_status,
+                                new_status,
+                                reviewer,
+                                note,
+                                timestamp
+                            )
+                            VALUES (
+                                :event_id,
+                                :study_id,
+                                :finding_id,
+                                :event_type,
+                                :previous_status,
+                                :new_status,
+                                :reviewer,
+                                :note,
+                                :timestamp
+                            )
+                            """
                         ),
+                        {
+                            "event_id": str(uuid4()),
+                            "study_id": study_id,
+                            "finding_id": finding_id,
+                            "event_type": "created",
+                            "previous_status": None,
+                            "new_status": "pending",
+                            "reviewer": "system",
+                            "note": "Finding synchronized from deterministic QC.",
+                            "timestamp": _as_iso(now),
+                        },
                     )
+
                     created += 1
 
             total = conn.execute(
-                "SELECT COUNT(*) FROM review_records WHERE study_id=?",
-                (study_id,),
-            ).fetchone()[0]
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM review_records
+                    WHERE study_id = :study_id
+                    """
+                ),
+                {"study_id": study_id},
+            ).scalar_one()
+
         return created, int(total)
 
     def list_records(
-        self, study_id: str, status: ReviewStatus | None = None
+        self,
+        study_id: str,
+        status: ReviewStatus | None = None,
     ) -> list[ReviewRecord]:
-        sql = "SELECT * FROM review_records WHERE study_id=?"
-        params: list[object] = [study_id]
+        params: dict[str, object] = {"study_id": study_id}
+
+        sql = """
+            SELECT *
+            FROM review_records
+            WHERE study_id = :study_id
+        """
+
         if status is not None:
-            sql += " AND status=?"
-            params.append(status)
+            sql += " AND status = :status"
+            params["status"] = _enum_value(status)
+
         sql += " ORDER BY finding_json, finding_id"
-        with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(text(sql), params).mappings().all()
+
         records = [self._record_from_row(row) for row in rows]
+
         return sorted(
             records,
-            key=lambda r: (r.finding.subject_id, r.finding.rule_id, r.finding_id),
+            key=lambda r: (
+                r.finding.subject_id,
+                r.finding.rule_id,
+                r.finding_id,
+            ),
         )
 
     def get(self, study_id: str, finding_id: str) -> ReviewRecord | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM review_records WHERE study_id=? AND finding_id=?",
-                (study_id, finding_id),
-            ).fetchone()
+        with self.engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT *
+                        FROM review_records
+                        WHERE study_id = :study_id
+                          AND finding_id = :finding_id
+                        """
+                    ),
+                    {
+                        "study_id": study_id,
+                        "finding_id": finding_id,
+                    },
+                )
+                .mappings()
+                .first()
+            )
+
         return self._record_from_row(row) if row else None
 
     def update(
@@ -201,58 +323,117 @@ class PersistentHumanReviewStore:
             return None
 
         now = _utc_now()
-        with self._connect() as conn:
+        new_status = _enum_value(status)
+        previous_status = _enum_value(current.status)
+
+        with self.engine.begin() as conn:
             conn.execute(
-                """
-                UPDATE review_records
-                SET status=?, reviewer=?, note=?, updated_at=?
-                WHERE study_id=? AND finding_id=?
-                """,
-                (status, reviewer, note, _as_iso(now), study_id, finding_id),
-            )
-            conn.execute(
-                """
-                INSERT INTO audit_events(
-                    event_id, study_id, finding_id, event_type,
-                    previous_status, new_status, reviewer, note, timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(uuid4()),
-                    study_id,
-                    finding_id,
-                    "review_updated",
-                    current.status,
-                    status,
-                    reviewer,
-                    note,
-                    _as_iso(now),
+                text(
+                    """
+                    UPDATE review_records
+                    SET status = :status,
+                        reviewer = :reviewer,
+                        note = :note,
+                        updated_at = :updated_at
+                    WHERE study_id = :study_id
+                      AND finding_id = :finding_id
+                    """
                 ),
+                {
+                    "status": new_status,
+                    "reviewer": reviewer,
+                    "note": note,
+                    "updated_at": _as_iso(now),
+                    "study_id": study_id,
+                    "finding_id": finding_id,
+                },
             )
+
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO audit_events(
+                        event_id,
+                        study_id,
+                        finding_id,
+                        event_type,
+                        previous_status,
+                        new_status,
+                        reviewer,
+                        note,
+                        timestamp
+                    )
+                    VALUES (
+                        :event_id,
+                        :study_id,
+                        :finding_id,
+                        :event_type,
+                        :previous_status,
+                        :new_status,
+                        :reviewer,
+                        :note,
+                        :timestamp
+                    )
+                    """
+                ),
+                {
+                    "event_id": str(uuid4()),
+                    "study_id": study_id,
+                    "finding_id": finding_id,
+                    "event_type": "review_updated",
+                    "previous_status": previous_status,
+                    "new_status": new_status,
+                    "reviewer": reviewer,
+                    "note": note,
+                    "timestamp": _as_iso(now),
+                },
+            )
+
         return self.get(study_id, finding_id)
 
-    def audit_events(self, study_id: str, finding_id: str) -> list[AuditEvent] | None:
+    def audit_events(
+        self,
+        study_id: str,
+        finding_id: str,
+    ) -> list[AuditEvent] | None:
         if self.get(study_id, finding_id) is None:
             return None
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM audit_events
-                WHERE study_id=? AND finding_id=?
-                ORDER BY timestamp, event_id
-                """,
-                (study_id, finding_id),
-            ).fetchall()
+
+        with self.engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT *
+                        FROM audit_events
+                        WHERE study_id = :study_id
+                          AND finding_id = :finding_id
+                        ORDER BY timestamp, event_id
+                        """
+                    ),
+                    {
+                        "study_id": study_id,
+                        "finding_id": finding_id,
+                    },
+                )
+                .mappings()
+                .all()
+            )
+
         return [
             AuditEvent(
-                event_id=row["event_id"],
-                finding_id=row["finding_id"],
-                event_type=row["event_type"],
-                previous_status=row["previous_status"],
-                new_status=row["new_status"],
-                reviewer=row["reviewer"],
-                note=row["note"],
-                timestamp=_parse_dt(row["timestamp"]),
+                event_id=str(row["event_id"]),
+                finding_id=str(row["finding_id"]),
+                event_type=str(row["event_type"]),
+                previous_status=(
+                    str(row["previous_status"])
+                    if row["previous_status"] is not None
+                    else None
+                ),
+                new_status=str(row["new_status"]),
+                reviewer=str(row["reviewer"]),
+                note=str(row["note"]) if row["note"] is not None else None,
+                timestamp=_parse_dt(str(row["timestamp"])),
             )
             for row in rows
         ]
